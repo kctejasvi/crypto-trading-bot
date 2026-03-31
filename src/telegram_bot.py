@@ -38,6 +38,7 @@ class TelegramNotifier:
         self._expanded_scan_cb = None      # registered by TradingBot
         self._aggressive_strategy = None   # registered by TradingBot
         self._aggressive_execute_cb = None # registered by TradingBot
+        self._live_status_cb = None        # registered by TradingBot — returns live state dict
 
         if self.enabled:
             if not self.bot_token or self.bot_token == "YOUR_TELEGRAM_BOT_TOKEN":
@@ -58,6 +59,10 @@ class TelegramNotifier:
         """Register AggressiveStrategy instance so /aggressive can toggle it."""
         self._aggressive_strategy = strategy
         self._aggressive_execute_cb = execute_cb
+
+    def register_live_status(self, cb):
+        """Register callback that returns live bot state dict."""
+        self._live_status_cb = cb
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -227,94 +232,144 @@ class TelegramNotifier:
             await self._send(f"⚠️ Expanded scan error: `{e}`")
 
     async def _send_report(self):
-        """Generate and send performance report from SQLite DB."""
+        """Generate live performance report from SQLite DB + current bot state."""
         try:
+            now_ist = datetime.now(timezone.utc)
+            now_str = (now_ist).strftime("%d %b %Y") + f" {(now_ist.hour + 5) % 12 or 12}:{(now_ist.minute + 30) % 60:02d} {'AM' if (now_ist.hour + 5) % 24 < 12 else 'PM'} IST"
+
+            # ── Live state from bot ──────────────────────────────────────
+            live = self._live_status_cb() if self._live_status_cb else {}
+            aggr_on   = live.get("aggressive_on", False)
+            last_cycle = live.get("last_cycle", "—")
+            idle_hrs  = live.get("idle_hours", 0.0)
+            open_trades = live.get("open_trades", [])
+            live_indicators = live.get("indicators", {})  # {symbol: {rsi, ema_fast, ema_slow, close}}
+
+            # ── DB stats ─────────────────────────────────────────────────
             db_path = Path(self._db_file)
-            if not db_path.exists():
-                await self._send("📊 No trades recorded yet.")
-                return
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
             conn = sqlite3.connect(str(db_path))
             cur = conn.cursor()
 
-            cur.execute("SELECT COUNT(*) FROM trades")
-            total = cur.fetchone()[0]
+            # All-time
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(pnl),0), COALESCE(MAX(pnl),0), COALESCE(MIN(pnl),0) FROM trades")
+            total, total_pnl, best, worst = cur.fetchone()
+            wins = 0
+            avg_win = avg_loss = 0.0
+            pf = 0.0
+            if total > 0:
+                cur.execute("SELECT COUNT(*) FROM trades WHERE pnl > 0")
+                wins = cur.fetchone()[0]
+                losses = total - wins
+                cur.execute("SELECT COALESCE(AVG(pnl),0) FROM trades WHERE pnl > 0")
+                avg_win = cur.fetchone()[0]
+                cur.execute("SELECT COALESCE(AVG(pnl),0) FROM trades WHERE pnl <= 0")
+                avg_loss = cur.fetchone()[0]
+                gross_win  = avg_win * wins if wins else 0
+                gross_loss = abs(avg_loss * losses) if losses else 1
+                pf = round(gross_win / gross_loss, 2) if gross_loss else 0
 
-            if total == 0:
-                conn.close()
-                await self._send("📊 No trades recorded yet — bot is scanning for signals.")
-                return
-
-            cur.execute("SELECT COUNT(*) FROM trades WHERE pnl > 0")
-            wins = cur.fetchone()[0]
-            losses = total - wins
-
-            cur.execute("SELECT COALESCE(SUM(pnl),0) FROM trades")
-            total_pnl = cur.fetchone()[0]
-
-            cur.execute("SELECT COALESCE(AVG(pnl),0) FROM trades WHERE pnl > 0")
-            avg_win = cur.fetchone()[0]
-
-            cur.execute("SELECT COALESCE(AVG(pnl),0) FROM trades WHERE pnl <= 0")
-            avg_loss = cur.fetchone()[0]
-
-            cur.execute("SELECT COALESCE(MAX(pnl),0) FROM trades")
-            best = cur.fetchone()[0]
-
-            cur.execute("SELECT COALESCE(MIN(pnl),0) FROM trades")
-            worst = cur.fetchone()[0]
+            # Today
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(pnl),0) FROM trades WHERE DATE(created_at)=?", (today_str,))
+            today_trades, today_pnl = cur.fetchone()
 
             # Per symbol
-            cur.execute("""
-                SELECT symbol,
-                       COUNT(*) as trades,
-                       SUM(pnl) as pnl,
-                       ROUND(100.0*SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END)/COUNT(*),1) as wr
-                FROM trades GROUP BY symbol ORDER BY pnl DESC
-            """)
-            symbols = cur.fetchall()
+            cur.execute("""SELECT symbol, COUNT(*), SUM(pnl),
+                           ROUND(100.0*SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END)/COUNT(*),1)
+                           FROM trades GROUP BY symbol ORDER BY SUM(pnl) DESC""")
+            sym_rows = cur.fetchall()
+
+            # Last 3 trades
+            cur.execute("SELECT symbol, side, entry_price, exit_price, pnl, reason, closed_at FROM trades ORDER BY id DESC LIMIT 3")
+            last_trades = cur.fetchall()
             conn.close()
 
             win_rate = (wins / total * 100) if total > 0 else 0
-            gross_win = avg_win * wins if wins else 0
-            gross_loss = abs(avg_loss * losses) if losses else 1
-            pf = round(gross_win / gross_loss, 2) if gross_loss else 0
-
             pnl_emoji = "📈" if total_pnl >= 0 else "📉"
-            now_ist = datetime.now(timezone.utc).strftime("%d %b %Y %I:%M %p") + " IST"
 
-            sym_lines = "\n".join(
-                f"  `{s[0]}` — {s[1]} trades | PnL: `{s[2]:+.2f}` | WR: `{s[3]}%`"
-                for s in symbols
-            )
+            # ── Build message ─────────────────────────────────────────────
+            lines = [
+                f"{pnl_emoji} *LIVE BOT REPORT*",
+                f"_{now_str}_",
+                "",
+                f"*🤖 Bot Status*",
+                f"  Strategy: `{'⚡ AGGRESSIVE' if aggr_on else '✅ NORMAL'}`",
+                f"  Last cycle: `{last_cycle}`",
+                f"  Idle: `{idle_hrs:.1f}h` since last trade",
+                f"  Open trades: `{len(open_trades)}`",
+            ]
 
-            msg = (
-                f"{pnl_emoji} *BOT PERFORMANCE REPORT*\n"
-                f"_{now_ist}_\n\n"
-                f"*Overall*\n"
-                f"Trades: `{total}` (W:`{wins}` / L:`{losses}`)\n"
-                f"Win Rate: `{win_rate:.1f}%`\n"
-                f"Total PnL: `{total_pnl:+.2f} USDT`\n"
-                f"Avg Win: `{avg_win:+.2f}` | Avg Loss: `{avg_loss:+.2f}`\n"
-                f"Best: `{best:+.2f}` | Worst: `{worst:+.2f}`\n"
-                f"Profit Factor: `{pf}`\n\n"
-                f"*Per Symbol*\n{sym_lines}"
-            )
-            await self._send(msg)
+            # Live market snapshot
+            if live_indicators:
+                lines.append("")
+                lines.append("*📡 Market Snapshot*")
+                for sym, ind in live_indicators.items():
+                    rsi = ind.get("rsi", 0)
+                    close = ind.get("close", 0)
+                    ema_fast = ind.get("ema_fast", 0)
+                    ema_slow = ind.get("ema_slow", 0)
+                    trend = "↑" if ema_fast > ema_slow else "↓"
+                    rsi_tag = "🔴 OVS" if rsi < 30 else ("🟢 OVB" if rsi > 70 else "🟡 NEU")
+                    lines.append(f"  `{sym}` ${close:,.2f} | RSI `{rsi:.1f}` {rsi_tag} | Trend `{trend}`")
+
+            # Today
+            lines += [
+                "",
+                f"*📅 Today*",
+                f"  Trades: `{today_trades}` | PnL: `{today_pnl:+.2f} USDT`",
+            ]
+
+            # All-time
+            lines += [
+                "",
+                f"*📊 All-Time*",
+                f"  Trades: `{total}` (W:`{wins}` / L:`{total - wins}`)",
+                f"  Win Rate: `{win_rate:.1f}%` | Profit Factor: `{pf}`",
+                f"  Total PnL: `{total_pnl:+.2f} USDT`",
+                f"  Avg Win: `{avg_win:+.2f}` | Avg Loss: `{avg_loss:+.2f}`",
+                f"  Best: `{best:+.2f}` | Worst: `{worst:+.2f}`",
+            ]
+
+            # Per symbol
+            if sym_rows:
+                lines.append("")
+                lines.append("*💹 Per Symbol*")
+                for s in sym_rows:
+                    lines.append(f"  `{s[0]}` {s[1]}T | `{s[2]:+.2f}` USDT | WR `{s[3]}%`")
+
+            # Last trades
+            if last_trades:
+                lines.append("")
+                lines.append("*🕐 Last 3 Trades*")
+                for t in last_trades:
+                    sym, side, ep, xp, pnl, reason, closed = t
+                    e = "✅" if pnl > 0 else "🔴"
+                    lines.append(f"  {e} `{sym}` {side.upper()} `{pnl:+.2f}` — {reason}")
+
+            await self._send("\n".join(lines))
+
         except Exception as e:
             logger.error("Report generation error: %s", e)
             await self._send("⚠️ Error generating report.")
 
     async def _send_status(self):
-        now_ist = datetime.now(timezone.utc).strftime("%d %b %Y %I:%M %p") + " IST"
+        live = self._live_status_cb() if self._live_status_cb else {}
+        aggr_on    = live.get("aggressive_on", False)
+        last_cycle = live.get("last_cycle", "—")
+        idle_hrs   = live.get("idle_hours", 0.0)
+        open_trades = live.get("open_trades", [])
+        now_ist = datetime.now(timezone.utc)
+        now_str = f"{(now_ist.hour + 5) % 12 or 12}:{(now_ist.minute + 30) % 60:02d} {'AM' if (now_ist.hour+5)%24 < 12 else 'PM'} IST"
         await self._send(
-            f"✅ *BOT STATUS*\n"
-            f"_As of {now_ist}_\n\n"
-            f"Status: `Running`\n"
+            f"✅ *BOT STATUS* — _{now_str}_\n\n"
+            f"Strategy: `{'⚡ AGGRESSIVE' if aggr_on else '✅ NORMAL'}`\n"
+            f"Last cycle: `{last_cycle}`\n"
+            f"Idle: `{idle_hrs:.1f}h` since last trade\n"
+            f"Open trades: `{len(open_trades)}`\n"
             f"Mode: `Paper Trading`\n"
-            f"Exchange: `Binance Testnet`\n"
-            f"Options: `Deribit Testnet`\n"
-            f"Scan Interval: `60 seconds`"
+            f"Exchange: `Binance Testnet + Deribit Testnet`\n"
+            f"Scan: every `60s`"
         )
 
     # ── Internals ───────────────────────────────────────────────────────

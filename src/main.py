@@ -108,6 +108,7 @@ class TradingBot:
         self._exchange = exchange
         self._deribit  = deribit
         self._last_trade_time: Optional[datetime] = datetime.now(timezone.utc)
+        self._last_cycle_time: Optional[datetime] = None
         self._idle_expanded_hours: float = 1.0   # trigger expanded scan after 1hr no trade
         self.aggressive = AggressiveStrategy()
 
@@ -129,6 +130,7 @@ class TradingBot:
         logger = logging.getLogger(__name__)
         self.telegram.register_expanded_scan(self._expanded_scan_trigger)
         self.telegram.register_aggressive_strategy(self.aggressive, self._aggressive_execute_trigger)
+        self.telegram.register_live_status(self._get_live_status)
         asyncio.ensure_future(self.telegram.start_command_listener())
         try:
             while self.running:
@@ -154,6 +156,7 @@ class TradingBot:
     async def _cycle(self):
         logger = logging.getLogger(__name__)
         now = datetime.now(timezone.utc)
+        self._last_cycle_time = now
         logger.info("━━━ Cycle %s ━━━", now.strftime("%Y-%m-%d %H:%M:%S UTC"))
 
         # 1. Resolve active symbols via market scanner
@@ -472,6 +475,44 @@ class TradingBot:
         self.risk.sl_multiplier    = orig_sl
         self.risk.tp_multiplier    = orig_tp
         self._last_trade_time = datetime.now(timezone.utc)
+
+    def _get_live_status(self) -> dict:
+        """Returns current bot state for live Telegram /report and /status."""
+        last_cycle_ist = "—"
+        if self._last_cycle_time:
+            dt = self._last_cycle_time
+            total_minutes = dt.hour * 60 + dt.minute + 5 * 60 + 30  # UTC → IST (+5:30)
+            h = (total_minutes // 60) % 24
+            m = total_minutes % 60
+            ampm = "AM" if h < 12 else "PM"
+            h12 = h % 12 or 12
+            last_cycle_ist = f"{h12}:{m:02d} {ampm} IST"
+
+        symbols = self._active_symbols or self._fallback_symbols
+        indicators: dict = {}
+        for sym in symbols[:5]:   # cap at 5 to keep message short
+            df = self.data._data.get(sym) if hasattr(self.data, "_data") else None
+            if df is not None and not df.empty:
+                ind = self.indicators.calculate(sym, df)
+                if ind:
+                    indicators[sym] = {
+                        "rsi": ind.rsi,
+                        "close": ind.close,
+                        "ema_fast": ind.ema_fast,
+                        "ema_slow": ind.ema_slow,
+                    }
+
+        open_trades = []
+        if hasattr(self.trade_mgr, "_trades"):
+            open_trades = list(self.trade_mgr._trades.keys())
+
+        return {
+            "aggressive_on": self.aggressive.enabled,
+            "last_cycle": last_cycle_ist,
+            "idle_hours": self._idle_hours(),
+            "open_trades": open_trades,
+            "indicators": indicators,
+        }
 
     def _idle_hours(self) -> float:
         """Hours elapsed since last trade was executed."""
