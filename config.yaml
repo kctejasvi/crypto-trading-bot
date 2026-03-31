@@ -1,0 +1,99 @@
+# ============================================================
+# Crypto Trading Bot Configuration
+# ============================================================
+
+exchange:
+  name: binance
+  api_key: "YOUR_BINANCE_API_KEY"
+  api_secret: "YOUR_BINANCE_API_SECRET"
+  testnet: true  # Set to false for live trading
+
+deribit:
+  api_key: "1y2gZFIt"
+  api_secret: "tgwwURka4E0_-oUWTxHyNdiVhV0obl9C5S9AXnN3NoU"
+  # Testnet: test.deribit.com
+
+trading:
+  # symbols is used as fallback only if market scanner fails on first run
+  symbols:
+    - BTC/USDT
+    - ETH/USDT
+  timeframe: 5m
+  candles_limit: 200
+  loop_interval: 60  # seconds between each scan
+
+scanner:
+  enabled: true
+  top_n: 5                          # number of top coins to trade
+  rank_by: volume                   # "volume" = top 24h USDT volume | "change" = biggest movers
+  refresh_interval_seconds: 3600    # re-scan market every 1 hour
+  min_24h_volume_usdt: 50000000     # ignore coins with <$50M daily volume
+
+risk:
+  capital_risk_pct: 1.0       # 1% of capital per trade
+  atr_sl_multiplier: 1.0      # SL = 1x ATR
+  atr_tp_multiplier: 2.0      # TP = 2x ATR
+  max_trades_per_day: 3
+  max_consecutive_losses: 2
+  daily_drawdown_limit_pct: 3.0  # Stop trading if daily DD exceeds 3%
+
+indicators:
+  ema_fast: 20
+  ema_slow: 50
+  rsi_period: 14
+  atr_period: 14
+  volume_avg_period: 20
+  breakout_lookback: 20        # candles for 20-candle high/low
+  rsi_buy_low: 55
+  rsi_buy_high: 70
+  rsi_sell_low: 30
+  rsi_sell_high: 45
+  volume_multiplier: 1.5       # volume must be > 1.5x avg
+
+telegram:
+  enabled: true
+  bot_token: "8598328261:AAFLyEkOTvzBb-3QiyaEmTYB-QDk20zbqaw"
+  chat_id: "5824372750"
+
+logging:
+  log_dir: logs
+  trade_log_file: logs/trades.csv
+  db_file: logs/trades.db
+  log_level: INFO
+
+options:
+  enabled: true
+  strategy: strangle             # "straddle" (ATM) or "strangle" (OTM)
+  underlying_symbols:
+    - BTC/USDT
+    - ETH/USDT
+
+  # Contract selection
+  min_dte: 1                     # minimum days to expiry to consider
+  max_dte: 7                     # maximum days to expiry to consider
+  strangle_otm_pct: 2.0          # how far OTM each leg is (% from spot)
+
+  # Risk per trade
+  max_premium_pct_capital: 2.0   # max % of balance spent on premium per trade
+  contract_size: 0.01            # minimum contract size (BTC)
+
+  # Entry signal thresholds (Bollinger Band squeeze)
+  bb_period: 20
+  bb_std: 2.0
+  atr_period: 14
+  atr_avg_period: 50
+  vol_avg_period: 20
+  squeeze_lookback: 50
+  straddle_bb_pct: 20.0          # BB width in bottom 20th percentile → straddle
+  strangle_bb_pct: 35.0          # BB width in bottom 35th percentile → strangle
+  max_recent_move_pct: 1.5       # skip if underlying already moved > 1.5% in last 5 candles
+
+  # Exit conditions
+  tp_multiplier: 2.0             # close when position worth 2x premium paid (100% gain)
+  sl_multiplier: 0.5             # close when position worth 0.5x premium paid (50% loss)
+  min_dte_exit_hours: 4.0        # close if < 4 hours to expiry (avoid theta crush)
+  max_hold_hours: 48.0           # force close after 48 hours regardless
+
+# Safety flags
+paper_trading: true  # MUST be set to false explicitly for live trading
+live_trading_confirmed: false  # Additional safety confirmation
