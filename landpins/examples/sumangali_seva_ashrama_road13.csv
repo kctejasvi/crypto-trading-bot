@@ -1,0 +1,11 @@
+site_number,lat,lon,label,notes
+# ----------------------------------------------------------------------------
+# TEMPLATE ONLY — the coordinates below are PLACEHOLDERS near Hebbal, NOT real
+# survey data. Replace each lat/lon with values read off an authoritative
+# cadastral source (Dishaank / Bhu-Naksha / BBMP e-Aasthi) before relying on
+# the output. Lines starting with '#' are ignored by the parser.
+# ----------------------------------------------------------------------------
+Site 11,13.0358,77.5970,Site No. 11,REPLACE with verified coordinate
+Site 12,13.0360,77.5973,Site No. 12,REPLACE with verified coordinate
+Site 13,13.0362,77.5976,Site No. 13,REPLACE with verified coordinate
+Site 14,13.0364,77.5979,Site No. 14,REPLACE with verified coordinate

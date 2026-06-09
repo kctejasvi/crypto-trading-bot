@@ -1,0 +1,6 @@
+build/
+*.geojson
+*.kml
+*.html
+__pycache__/
+.pytest_cache/
