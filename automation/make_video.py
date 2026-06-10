@@ -45,6 +45,10 @@ import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Constant output frame rate. Every clip is forced to this so the concatenated
+# video track has a single, uniform timebase.
+FPS = 25
+
 # -----------------------------------------------------------------------------
 # Section model + markdown parsing
 # -----------------------------------------------------------------------------
@@ -168,8 +172,23 @@ def run(cmd: list[str]):
 
 
 def probe_duration(path: Path) -> float:
-    out = run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-               "-of", "default=nw=1:nk=1", str(path)]).stdout.strip()
+    """Exact media duration by *decoding* the stream.
+
+    edge-tts (and many encoders) write inaccurate duration metadata into MP3
+    headers; trusting `format=duration` made video segments run past the
+    narration, ballooning the total length. Decoding to null and reading the
+    final timestamp is slower but always correct.
+    """
+    proc = subprocess.run(["ffmpeg", "-i", str(path), "-f", "null", "-"],
+                          capture_output=True, text=True)
+    times = re.findall(r"time=(\d+):(\d+):([\d.]+)", proc.stderr)
+    if times:
+        h, m, s = times[-1]
+        return int(h) * 3600 + int(m) * 60 + float(s)
+    # Fallback to container metadata if decoding produced no timestamp.
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                          "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+                         capture_output=True, text=True).stdout.strip()
     try:
         return float(out)
     except ValueError:
@@ -275,59 +294,74 @@ def make_slide(section: Section, dest: Path, w: int, h: int):
     img.save(dest)
 
 
-def segment_from_image(img: Path, audio: Path, dur: float, out: Path, w: int, h: int):
-    """Still image -> video of `dur` seconds with a gentle zoom, muxed with audio."""
-    zoom = f"zoompan=z='min(zoom+0.0006,1.10)':d={max(int(dur*25),1)}:s={w}x{h}:fps=25"
-    run(["ffmpeg", "-y", "-loop", "1", "-i", str(img), "-i", str(audio),
-         "-vf", f"scale={w}:{h},{zoom},format=yuv420p",
-         "-c:v", "libx264", "-t", f"{dur}", "-c:a", "aac", "-shortest", str(out)])
+def visual_clip_from_image(img: Path, dur: float, out: Path, w: int, h: int):
+    """Still image -> SILENT video of exactly `dur` seconds, constant 25 fps."""
+    run(["ffmpeg", "-y", "-loop", "1", "-t", f"{dur}", "-i", str(img),
+         "-vf", f"scale={w}:{h},format=yuv420p", "-r", f"{FPS}",
+         "-fps_mode", "cfr", "-c:v", "libx264", "-an", str(out)])
 
 
-def segment_from_video(vid: Path, audio: Path, dur: float, out: Path, w: int, h: int):
-    """Stock clip -> looped/trimmed to `dur`, scaled+cropped, muxed with audio."""
+def visual_clip_from_video(vid: Path, dur: float, out: Path, w: int, h: int):
+    """Stock clip -> looped/trimmed to exactly `dur`, SILENT, constant 25 fps."""
     vf = (f"scale={w}:{h}:force_original_aspect_ratio=increase,"
           f"crop={w}:{h},format=yuv420p")
-    run(["ffmpeg", "-y", "-stream_loop", "-1", "-i", str(vid), "-i", str(audio),
-         "-vf", vf, "-c:v", "libx264", "-t", f"{dur}",
-         "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", str(out)])
+    run(["ffmpeg", "-y", "-stream_loop", "-1", "-t", f"{dur}", "-i", str(vid),
+         "-vf", vf, "-r", f"{FPS}", "-fps_mode", "cfr",
+         "-c:v", "libx264", "-an", str(out)])
 
 
 # -----------------------------------------------------------------------------
 # Assembly
+#
+# The video and audio tracks are built SEPARATELY then muxed once, instead of
+# building per-section A+V clips and concatenating them. This guarantees:
+#   * each section's silent visual is exactly its narration length (no -t drift
+#     from unreliable MP3 metadata -> no ballooning total),
+#   * the narration is one continuous AAC encode (concatenating per-section AAC
+#     with -c copy inserts encoder-priming gaps that accumulate into A/V drift).
 # -----------------------------------------------------------------------------
 
-def build_segments(sections, work: Path, key: str | None, w: int, h: int) -> list[Path]:
-    vis_dir = work / "visuals"; seg_dir = work / "segments"
-    vis_dir.mkdir(parents=True, exist_ok=True); seg_dir.mkdir(parents=True, exist_ok=True)
-    segs = []
+def build_video_track(sections, work: Path, key: str | None, w: int, h: int) -> Path:
+    vis_dir = work / "visuals"; clip_dir = work / "clips"
+    vis_dir.mkdir(parents=True, exist_ok=True); clip_dir.mkdir(parents=True, exist_ok=True)
+    clips = []
     for s in sections:
-        seg = seg_dir / f"{s.index:02d}.mp4"
+        clip = clip_dir / f"{s.index:02d}.mp4"
         got_stock = False
         if key:
-            clip = vis_dir / f"{s.index:02d}.mp4"
-            if clip.exists() or pexels_clip(s.visual_query, clip, key, w, h):
-                segment_from_video(clip, s.audio_path, s.duration, seg, w, h)
+            stock = vis_dir / f"{s.index:02d}.mp4"
+            if stock.exists() or pexels_clip(s.visual_query, stock, key, w, h):
+                visual_clip_from_video(stock, s.duration, clip, w, h)
                 got_stock = True
         if not got_stock:
             slide = vis_dir / f"{s.index:02d}.png"
             make_slide(s, slide, w, h)
-            segment_from_image(slide, s.audio_path, s.duration, seg, w, h)
-        print(f"  [segment] {s.index:02d} ({s.duration:.1f}s)")
-        segs.append(seg)
-    return segs
+            visual_clip_from_image(slide, s.duration, clip, w, h)
+        print(f"  [clip] {s.index:02d} ({s.duration:.1f}s){'  [stock]' if got_stock else ''}")
+        clips.append(clip)
 
-
-def concat(segs: list[Path], work: Path) -> Path:
-    listfile = work / "concat.txt"
-    listfile.write_text("".join(f"file '{p.resolve()}'\n" for p in segs))
-    out = work / "joined.mp4"
+    listfile = work / "video_concat.txt"
+    listfile.write_text("".join(f"file '{p.resolve()}'\n" for p in clips))
+    out = work / "video_track.mp4"
+    # Uniform codec/fps/timebase across clips -> stream copy concat is safe.
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
          "-c", "copy", str(out)])
     return out
 
 
-def finalize(joined: Path, srt: Path | None, music: Path | None, out: Path):
-    cmd = ["ffmpeg", "-y", "-i", str(joined)]
+def build_audio_track(sections, work: Path) -> Path:
+    """Concatenate narration MP3s into ONE continuous 48 kHz stereo AAC track."""
+    listfile = work / "audio_concat.txt"
+    listfile.write_text("".join(f"file '{s.audio_path.resolve()}'\n" for s in sections))
+    out = work / "audio_track.m4a"
+    run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
+         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", str(out)])
+    return out
+
+
+def finalize(video_track: Path, audio_track: Path,
+             srt: Path | None, music: Path | None, out: Path):
+    cmd = ["ffmpeg", "-y", "-i", str(video_track), "-i", str(audio_track)]
     filters, maps = [], []
     if music:
         cmd += ["-stream_loop", "-1", "-i", str(music)]
@@ -338,16 +372,14 @@ def finalize(joined: Path, srt: Path | None, music: Path | None, out: Path):
     else:
         maps += ["-map", "0:v"]
     if music:
-        filters.append("[1:a]volume=0.12[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]")
+        filters.append("[2:a]volume=0.12[bg];[1:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]")
         maps += ["-map", "[a]"]
     else:
-        maps += ["-map", "0:a"]
+        maps += ["-map", "1:a"]
     if filters:
         cmd += ["-filter_complex", ";".join(filters)]
-    # Normalize audio to 48 kHz stereo and put the moov atom up front
-    # (+faststart). edge-tts is 24 kHz mono, which makes some players (Windows
-    # Media Player, mobile/browser previews) show video with no sound. This also
-    # matches YouTube's recommended audio spec.
+    # 48 kHz stereo AAC + faststart (moov atom up front) so the voiceover plays
+    # in every player and streams cleanly; matches YouTube's recommended spec.
     cmd += maps + ["-c:v", "libx264", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
                    "-movflags", "+faststart", "-shortest", str(out)]
@@ -397,13 +429,13 @@ def main():
     else:
         print("3/5  Captions skipped")
 
-    print("4/5  Building segments ...")
-    segs = build_segments(sections, args.workdir, args.pexels_key, w, h)
+    print("4/5  Building video + audio tracks ...")
+    video_track = build_video_track(sections, args.workdir, args.pexels_key, w, h)
+    audio_track = build_audio_track(sections, args.workdir)
 
     print("5/5  Assembling final video ...")
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    joined = concat(segs, args.workdir)
-    finalize(joined, srt, args.music, args.output)
+    finalize(video_track, audio_track, srt, args.music, args.output)
     print(f"\nDone -> {args.output.resolve()}")
 
 

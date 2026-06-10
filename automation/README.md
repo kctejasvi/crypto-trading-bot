@@ -122,6 +122,7 @@ Want different visuals for a section? Edit the `[VISUAL: ...]` cue in the script
 
 | Symptom | Fix |
 |---|---|
+| **Video much longer than the narration / audio drifts out of sync** | Fixed: duration is now measured by decoding (not unreliable MP3 metadata), and the video + audio tracks are built separately then muxed. Re-render with the latest `make_video.py`. |
 | **Video plays but no sound** | Fixed: output is now 48 kHz stereo + faststart. Re-render with the latest `make_video.py`. (edge-tts is 24 kHz mono, which some players play silently.) |
 | **Video is "only headers"/slides, no footage** | Expected without a Pexels key — it falls back to text slides. Set `PEXELS_API_KEY` (free, see above) for real stock footage. |
 | `'ffmpeg' not found` | Install ffmpeg and reopen the terminal (PATH). |
