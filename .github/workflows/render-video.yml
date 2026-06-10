@@ -4,6 +4,12 @@ name: Render faceless video
 # script, and download the finished MP4 from the run's Artifacts. No local
 # setup needed — ffmpeg + deps are installed here in GitHub's cloud.
 
+# Run all JavaScript actions (checkout, setup-python, upload-artifact) on
+# Node.js 24. Silences the Node 20 deprecation warning and keeps the workflow
+# working after GitHub removes Node 20 from runners (Sept 2026).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   workflow_dispatch:
     inputs:
