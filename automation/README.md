@@ -122,6 +122,8 @@ Want different visuals for a section? Edit the `[VISUAL: ...]` cue in the script
 
 | Symptom | Fix |
 |---|---|
+| **Video plays but no sound** | Fixed: output is now 48 kHz stereo + faststart. Re-render with the latest `make_video.py`. (edge-tts is 24 kHz mono, which some players play silently.) |
+| **Video is "only headers"/slides, no footage** | Expected without a Pexels key — it falls back to text slides. Set `PEXELS_API_KEY` (free, see above) for real stock footage. |
 | `'ffmpeg' not found` | Install ffmpeg and reopen the terminal (PATH). |
 | Narration sounds robotic on Hindi words | Try `--voice hi-IN-SwaraNeural`. |
 | Pexels clips look generic | Sharpen the `[VISUAL: ...]` cue in the script to plain English keywords. |

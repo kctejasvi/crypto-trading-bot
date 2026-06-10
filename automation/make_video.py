@@ -344,7 +344,13 @@ def finalize(joined: Path, srt: Path | None, music: Path | None, out: Path):
         maps += ["-map", "0:a"]
     if filters:
         cmd += ["-filter_complex", ";".join(filters)]
-    cmd += maps + ["-c:v", "libx264", "-c:a", "aac", "-shortest", str(out)]
+    # Normalize audio to 48 kHz stereo and put the moov atom up front
+    # (+faststart). edge-tts is 24 kHz mono, which makes some players (Windows
+    # Media Player, mobile/browser previews) show video with no sound. This also
+    # matches YouTube's recommended audio spec.
+    cmd += maps + ["-c:v", "libx264", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+                   "-movflags", "+faststart", "-shortest", str(out)]
     run(cmd)
 
 
