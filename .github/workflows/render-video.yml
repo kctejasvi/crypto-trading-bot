@@ -1,0 +1,79 @@
+name: Render faceless video
+
+# Reusable for EVERY script in content/. Run it from the Actions tab, pick a
+# script, and download the finished MP4 from the run's Artifacts. No local
+# setup needed — ffmpeg + deps are installed here in GitHub's cloud.
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "Path to the script (any file under content/)"
+        required: true
+        default: "content/video-01-7-passive-income-ideas-2026.md"
+      voice:
+        description: "edge-tts voice"
+        required: true
+        default: "en-IN-NeerjaNeural"
+        type: choice
+        options:
+          - en-IN-NeerjaNeural   # female, Indian English
+          - en-IN-PrabhatNeural  # male, Indian English
+          - hi-IN-SwaraNeural    # female, fuller Hindi
+          - hi-IN-MadhurNeural   # male, fuller Hindi
+      rate:
+        description: "Speech rate (e.g. +0%, -5%, +10%)"
+        required: true
+        default: "+0%"
+      portrait:
+        description: "Vertical 9:16 (Shorts/Reels) instead of 16:9"
+        type: boolean
+        default: false
+      captions:
+        description: "Burn in captions"
+        type: boolean
+        default: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: pip install -r automation/requirements.txt
+
+      - name: Render video
+        # PEXELS_API_KEY is optional: add it as a repo secret to use real stock
+        # footage; without it the pipeline falls back to generated text slides.
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          ARGS=""
+          [ "${{ inputs.portrait }}" = "true" ] && ARGS="$ARGS --portrait"
+          [ "${{ inputs.captions }}" = "false" ] && ARGS="$ARGS --no-captions"
+          python automation/make_video.py "${{ inputs.script }}" \
+            --voice "${{ inputs.voice }}" \
+            --rate "${{ inputs.rate }}" \
+            --output "output/video.mp4" \
+            --workdir "work" \
+            $ARGS
+
+      - name: Name the artifact after the script
+        id: name
+        run: echo "slug=$(basename '${{ inputs.script }}' .md)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload finished video
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.slug }}-mp4
+          path: output/video.mp4
+          if-no-files-found: error
+          retention-days: 14

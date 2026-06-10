@@ -7,3 +7,8 @@ logs/trades.db
 bot.pid
 data/
 .env
+
+# Faceless video automation build artifacts
+automation/work/
+automation/output/
+automation/.venv/
