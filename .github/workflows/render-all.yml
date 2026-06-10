@@ -1,0 +1,48 @@
+name: Render ALL videos
+
+# Manual button: render every script in content/ in one run (one MP4 artifact
+# per script). Useful for rebuilding the whole series after a pipeline change.
+
+on:
+  workflow_dispatch:
+    inputs:
+      voice:
+        description: "edge-tts voice for all videos"
+        required: true
+        default: "en-IN-NeerjaNeural"
+        type: choice
+        options:
+          - en-IN-NeerjaNeural
+          - en-IN-PrabhatNeural
+          - hi-IN-SwaraNeural
+          - hi-IN-MadhurNeural
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      scripts: ${{ steps.find.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: List content scripts
+        id: find
+        run: |
+          arr=$(find content -maxdepth 1 -name '*.md' | sort | jq -R -s -c 'split("\n")|map(select(length>0))')
+          echo "scripts=$arr" >> "$GITHUB_OUTPUT"
+          echo "Found: $arr"
+
+  render:
+    needs: list
+    if: needs.list.outputs.scripts != '[]' && needs.list.outputs.scripts != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        script: ${{ fromJson(needs.list.outputs.scripts) }}
+    uses: ./.github/workflows/render-core.yml
+    with:
+      script: ${{ matrix.script }}
+      voice: ${{ inputs.voice }}
+    secrets: inherit

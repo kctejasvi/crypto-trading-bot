@@ -1,0 +1,43 @@
+name: Auto-render changed scripts
+
+# Whenever a content/*.md script is added or edited on master, automatically
+# render just that file (not the whole series). Zero clicks: commit -> video.
+# Download the MP4 from the run's Artifacts.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "content/**"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      scripts: ${{ steps.changed.outputs.scripts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # need the previous commit to diff against
+      - name: Find changed content scripts
+        id: changed
+        run: |
+          changed=$(git diff --name-only HEAD~1 HEAD -- 'content/*.md' 2>/dev/null || true)
+          arr=$(printf '%s\n' "$changed" | grep -E '\.md$' | jq -R -s -c 'split("\n")|map(select(length>0))')
+          echo "scripts=${arr:-[]}" >> "$GITHUB_OUTPUT"
+          echo "Will render: ${arr:-[]}"
+
+  render:
+    needs: detect
+    if: needs.detect.outputs.scripts != '[]' && needs.detect.outputs.scripts != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        script: ${{ fromJson(needs.detect.outputs.scripts) }}
+    uses: ./.github/workflows/render-core.yml
+    with:
+      script: ${{ matrix.script }}
+    secrets: inherit

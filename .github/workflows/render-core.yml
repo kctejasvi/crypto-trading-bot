@@ -1,0 +1,77 @@
+name: render-core (reusable)
+
+# Shared render engine. Not run directly — called by render-video.yml (manual),
+# render-all.yml (manual, all scripts) and render-on-push.yml (auto on push).
+# Edit the build steps here once and all three pick up the change.
+
+on:
+  workflow_call:
+    inputs:
+      script:
+        description: "Path to a content/*.md script"
+        required: true
+        type: string
+      voice:
+        required: false
+        type: string
+        default: "en-IN-NeerjaNeural"
+      rate:
+        required: false
+        type: string
+        default: "+0%"
+      portrait:
+        required: false
+        type: boolean
+        default: false
+      captions:
+        required: false
+        type: boolean
+        default: true
+
+# Run the JS actions on Node 24 (silences the Node 20 deprecation warning).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: pip install -r automation/requirements.txt
+
+      - name: Render video
+        # PEXELS_API_KEY (repo secret) is optional: with it -> real stock
+        # footage; without it -> generated text slides.
+        env:
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          ARGS=""
+          [ "${{ inputs.portrait }}" = "true" ] && ARGS="$ARGS --portrait"
+          [ "${{ inputs.captions }}" = "false" ] && ARGS="$ARGS --no-captions"
+          python automation/make_video.py "${{ inputs.script }}" \
+            --voice "${{ inputs.voice }}" \
+            --rate "${{ inputs.rate }}" \
+            --output "output/video.mp4" \
+            --workdir "work" \
+            $ARGS
+
+      - name: Name artifact after the script
+        id: name
+        run: echo "slug=$(basename '${{ inputs.script }}' .md)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload finished video
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.slug }}-mp4
+          path: output/video.mp4
+          if-no-files-found: error
+          retention-days: 14

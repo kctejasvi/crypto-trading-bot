@@ -1,14 +1,7 @@
 name: Render faceless video
 
-# Reusable for EVERY script in content/. Run it from the Actions tab, pick a
-# script, and download the finished MP4 from the run's Artifacts. No local
-# setup needed — ffmpeg + deps are installed here in GitHub's cloud.
-
-# Run all JavaScript actions (checkout, setup-python, upload-artifact) on
-# Node.js 24. Silences the Node 20 deprecation warning and keeps the workflow
-# working after GitHub removes Node 20 from runners (Sept 2026).
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+# Manual single-video render. Pick a script and options, download the MP4 from
+# the run's Artifacts. (Auto-render on push is handled by render-on-push.yml.)
 
 on:
   workflow_dispatch:
@@ -42,44 +35,11 @@ on:
 
 jobs:
   render:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Python deps
-        run: pip install -r automation/requirements.txt
-
-      - name: Render video
-        # PEXELS_API_KEY is optional: add it as a repo secret to use real stock
-        # footage; without it the pipeline falls back to generated text slides.
-        env:
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-        run: |
-          ARGS=""
-          [ "${{ inputs.portrait }}" = "true" ] && ARGS="$ARGS --portrait"
-          [ "${{ inputs.captions }}" = "false" ] && ARGS="$ARGS --no-captions"
-          python automation/make_video.py "${{ inputs.script }}" \
-            --voice "${{ inputs.voice }}" \
-            --rate "${{ inputs.rate }}" \
-            --output "output/video.mp4" \
-            --workdir "work" \
-            $ARGS
-
-      - name: Name the artifact after the script
-        id: name
-        run: echo "slug=$(basename '${{ inputs.script }}' .md)" >> "$GITHUB_OUTPUT"
-
-      - name: Upload finished video
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.name.outputs.slug }}-mp4
-          path: output/video.mp4
-          if-no-files-found: error
-          retention-days: 14
+    uses: ./.github/workflows/render-core.yml
+    with:
+      script: ${{ inputs.script }}
+      voice: ${{ inputs.voice }}
+      rate: ${{ inputs.rate }}
+      portrait: ${{ inputs.portrait }}
+      captions: ${{ inputs.captions }}
+    secrets: inherit
