@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Faceless Video Studio</title>
+<style>
+  :root { color-scheme: light dark; --bg:#0e1220; --card:#171c2e; --line:#2a3350;
+          --fg:#eef1f8; --muted:#98a2c0; --accent:#5b8cff; --ok:#3ecf8e; --err:#ff6b6b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  .wrap { max-width:860px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 24px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:20px; margin-bottom:20px; }
+  label { display:block; font-weight:600; margin:14px 0 6px; }
+  select, input[type=text] { width:100%; padding:10px 12px; border-radius:9px;
+          border:1px solid var(--line); background:#0f1424; color:var(--fg); font-size:15px; }
+  .row { display:flex; gap:20px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:200px; }
+  .checks { display:flex; gap:22px; margin-top:16px; align-items:center; }
+  .checks label { display:flex; gap:8px; align-items:center; font-weight:500; margin:0; cursor:pointer; }
+  button { margin-top:20px; width:100%; padding:13px; border:0; border-radius:10px;
+           background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  .hint { color:var(--muted); font-size:13px; margin-top:10px; }
+  #console { display:none; background:#0a0e1a; border:1px solid var(--line); border-radius:10px;
+             padding:14px; font:13px/1.6 ui-monospace,Menlo,Consolas,monospace;
+             white-space:pre-wrap; max-height:320px; overflow:auto; color:#c7d0ea; }
+  .status { font-weight:600; margin-bottom:10px; }
+  .status.ok { color:var(--ok); } .status.err { color:var(--err); }
+  video { width:100%; border-radius:10px; margin-top:8px; background:#000; }
+  .dl { display:inline-block; margin-top:12px; padding:10px 16px; border-radius:9px;
+        background:var(--ok); color:#04211a; font-weight:700; text-decoration:none; }
+  .empty { color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎬 Faceless Video Studio</h1>
+  <p class="sub">Pick a script, choose a voice, and generate — all on your machine.</p>
+
+  <div class="card">
+    {% if scripts %}
+    <label for="script">Script</label>
+    <select id="script">
+      {% for s in scripts %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    </select>
+
+    <div class="row">
+      <div>
+        <label for="voice">Voice</label>
+        <select id="voice">
+          {% for v, label in voices %}<option value="{{ v }}">{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="rate">Speech rate</label>
+        <input type="text" id="rate" value="+0%" placeholder="+0%  (try -5% to slow down)">
+      </div>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="captions" checked> Burn in captions</label>
+      <label><input type="checkbox" id="portrait"> Vertical 9:16 (Shorts)</label>
+    </div>
+
+    <button id="go">Generate video</button>
+    <p class="hint">First run downloads the narration voice (needs internet). Real stock
+      footage needs <code>PEXELS_API_KEY</code> set before launching; otherwise you get slides.</p>
+    {% else %}
+    <p class="empty">No scripts found in <code>content/</code>. Add a <code>*.md</code> script there and refresh.</p>
+    {% endif %}
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <div class="status" id="statusLine">Working…</div>
+    <div id="console"></div>
+    <div id="player"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let poll = null;
+
+$("go")?.addEventListener("click", async () => {
+  $("go").disabled = true;
+  $("resultCard").style.display = "block";
+  $("statusLine").className = "status";
+  $("statusLine").textContent = "Starting…";
+  $("console").style.display = "block";
+  $("console").textContent = "";
+  $("player").innerHTML = "";
+
+  const body = {
+    script: $("script").value,
+    voice: $("voice").value,
+    rate: $("rate").value || "+0%",
+    captions: $("captions").checked,
+    portrait: $("portrait").checked,
+  };
+  const r = await fetch("/generate", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const j = await r.json();
+  if (j.error) { fail(j.error); return; }
+  poll = setInterval(() => checkStatus(j.job_id), 1000);
+});
+
+async function checkStatus(id) {
+  const r = await fetch("/status/" + id);
+  const j = await r.json();
+  if (j.error) return;
+  const c = $("console");
+  c.textContent = j.log.join("\n");
+  c.scrollTop = c.scrollHeight;
+  if (!j.done) { $("statusLine").textContent = "Rendering… " + lastStep(j.log); return; }
+  clearInterval(poll);
+  $("go").disabled = false;
+  if (j.ok && j.video_url) {
+    $("statusLine").className = "status ok";
+    $("statusLine").textContent = "✅ Done";
+    $("player").innerHTML =
+      `<video controls autoplay muted src="${j.video_url}"></video>
+       <a class="dl" href="${j.video_url}" download>⬇ Download MP4</a>`;
+  } else {
+    fail("Render failed — see the log above.");
+  }
+}
+function lastStep(log){ const m=[...log].reverse().find(l=>/^\d\/5/.test(l)); return m||""; }
+function fail(msg){ if(poll)clearInterval(poll); $("go").disabled=false;
+  $("statusLine").className="status err"; $("statusLine").textContent="❌ "+msg; }
+</script>
+</body>
+</html>

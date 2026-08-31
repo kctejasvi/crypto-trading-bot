@@ -43,6 +43,23 @@ That's it. You're ready.
 
 ---
 
+## Prefer a UI? Local web app
+
+If you'd rather click than type commands, there's a small local web front end in
+[`webapp/`](webapp/) — browse your scripts, pick voice/format, hit **Generate**,
+watch live progress, then preview and download the MP4 in the browser.
+
+```bash
+cd automation/webapp
+pip install -r requirements.txt
+python app.py                 # -> open http://127.0.0.1:5000
+```
+
+It runs entirely on your machine and calls the same `make_video.py` under the
+hood. For real stock footage, `export PEXELS_API_KEY=xxxx` before launching.
+
+---
+
 ## Run it (step by step)
 
 ```bash
